@@ -1,0 +1,33 @@
+[package]
+name = "hl-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77.2"
+description = "The vault format and cryptographic core of The Human Layer: Argon2id key derivation, per-entry envelope encryption with XChaCha20-Poly1305, and an append-only encrypted store."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/thehumanlayer/hl-core"
+readme = "README.md"
+keywords = ["encryption", "xchacha20poly1305", "argon2", "journal", "local-first"]
+categories = ["cryptography", "filesystem"]
+exclude = ["/.github"]
+
+[dependencies]
+# crypto
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+zeroize = { version = "1", features = ["zeroize_derive"] }
+rand = "0.8"
+# data
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+thiserror = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[dev-dependencies]
+# hidden passphrase prompt for the reference reader (never echoed, never in argv)
+rpassword = "7"
+# unique temp directories in tests
+uuid = { version = "1", features = ["v4"] }
