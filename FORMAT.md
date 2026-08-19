@@ -51,7 +51,8 @@ Properties a reader may rely on:
   treat it as a string.
 
 The date in the filename is a convenience for listing and is **not** authenticated
-in v1. The authenticated copy of the date lives in the encrypted record (§8).
+in any version. The authenticated copy of the date lives in the header (`date`,
+authenticated in v2) and in the encrypted record (§8).
 
 ## 3. Keys and key modes
 
@@ -158,7 +159,7 @@ key-wrapping AEAD can change without breaking the outer parse.
 Serialized with no whitespace, fields in this order:
 
 ```json
-{"v":1,"fmt":"hl-entry","aead":"xchacha20poly1305","id":"aaa111",
+{"v":2,"fmt":"hl-entry","aead":"xchacha20poly1305","id":"aaa111",
  "date":"2026-08-01","key":"master:v1","created":"2026-08-18T14:25:35.069Z"}
 ```
 
@@ -302,6 +303,9 @@ bytes: nonce (24) ‖ ciphertext ‖ tag (16)        — no header, no magic, no
 key:   subkey("entries/v1")
 aad:   "entries/v1|<id>"
 ```
+
+The `entries/v1` in that key purpose and AAD is a key-derivation label that predates
+envelope versioning; it is unrelated to envelope v1 (§4).
 
 The `id` comes from the filename (the portion after the first `_`, minus the `.hlj`
 suffix). Because that id is bound into the AAD, a v0 file that is renamed stops

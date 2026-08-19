@@ -89,7 +89,7 @@ vault key decrypts them like anything else. See FORMAT.md §6.
 ## Building
 
 ```
-cargo test        # 26 tests
+cargo test        # the full suite
 cargo clippy --all-targets -- -D warnings
 ```
 
