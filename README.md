@@ -82,7 +82,7 @@ vault key decrypts them like anything else. See FORMAT.md §6.
    only the envelope header parser. Its verifier is a closure the *caller* supplies,
    so even the hardened path keeps the key on the caller's side. Grep it.
 6. Watch the network while you use the app. On first run, it downloads its AI model
-   (~5 GB) from `models.thehumanlayer.co`; nothing is uploaded. After that it makes no
+   (~3 GB) from `models.thehumanlayer.co`; nothing is uploaded. After that it makes no
    network calls except a version check at launch. Optional email-to-vault adds a poll
    of your own mailbox while the app is open — off by default, and separate from the
    vault, the AI, and everything documented here. The app ships a Little Snitch Internet
