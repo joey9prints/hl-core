@@ -38,6 +38,8 @@ pub struct SyncReport {
     /// Files excluded from this pass as untrustworthy: malformed, or rejected by the
     /// caller's verifier. They never win newest-wins, never propagate, never deleted.
     pub quarantined: usize,
+    /// Envelope files removed this pass because a tombstone marks their id deleted.
+    pub deleted: usize,
 }
 
 /// A caller-supplied integrity check over a whole envelope file. Reconcile itself
@@ -164,10 +166,16 @@ pub fn reconcile_with(
     remote: &Path,
     verify: Option<Verifier<'_>>,
 ) -> Result<SyncReport> {
+    // Deletes travel as tombstones. Apply them first so a tombstoned id is gone on
+    // both sides before newest-wins runs — otherwise the surviving copy would just
+    // be re-pushed to the peer that deleted it.
+    let deleted = crate::tombstone::reconcile_pair(local, remote)?;
+
     let (l, l_bad) = scan(local, verify)?;
     let (r, r_bad) = scan(remote, verify)?;
     let mut rep = SyncReport {
         quarantined: l_bad.len() + r_bad.len(),
+        deleted,
         ..SyncReport::default()
     };
 
@@ -367,6 +375,33 @@ mod tests {
         assert_eq!(rep.pulled, 0, "the junk never travels");
         let bytes = fs::read(remote.join("2026-08-01_a.hlj")).unwrap();
         assert!(envelope::open_envelope(&MasterKey::from_bytes([7u8; 32]), &bytes).is_ok());
+    }
+
+    #[test]
+    fn a_tombstone_deletes_on_both_sides_and_does_not_resurrect() {
+        let local = tmp();
+        let remote = tmp();
+        // "a" is synced on both; "b" is a normal local-only entry that must survive.
+        put(&local, "a", "2026-08-01", "2026-08-01T10:00:00Z", b"to be deleted");
+        put(&remote, "a", "2026-08-01", "2026-08-01T10:00:00Z", b"to be deleted");
+        put(&local, "b", "2026-08-02", "2026-08-02T10:00:00Z", b"keep me");
+        // a delete of "a" originated on the peer (its tombstone is in the container).
+        crate::tombstone::mark(&remote, "a", "2026-08-03T09:00:00Z").unwrap();
+
+        let rep = reconcile(&local, &remote).unwrap();
+        assert!(rep.deleted >= 2, "a removed on both sides");
+        // a is gone everywhere, b propagated normally
+        assert!(!local.join("2026-08-01_a.hlj").exists());
+        assert!(!remote.join("2026-08-01_a.hlj").exists());
+        assert!(remote.join("2026-08-02_b.hlj").exists(), "b pushed to remote");
+        // the tombstone reached the local side too
+        assert!(local.join("a.tomb").exists());
+
+        // idempotent + no resurrection: a stays gone, nothing new deleted or moved
+        let rep2 = reconcile(&local, &remote).unwrap();
+        assert_eq!(rep2.deleted, 0);
+        assert_eq!((rep2.pushed, rep2.pulled), (0, 0));
+        assert!(!local.join("2026-08-01_a.hlj").exists());
     }
 
     #[test]

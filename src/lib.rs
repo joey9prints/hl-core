@@ -10,6 +10,8 @@
 //!   migrate. v2 authenticates the stored header; see FORMAT.md §11.
 //! - [`store`]   — one envelope file per record under an injected vault root.
 //! - [`sync`]    — key-free reconcile of two vault directories (see FORMAT.md).
+//! - [`tombstone`]— deletion markers that carry a delete across the keyless
+//!   sync boundary so it propagates to every peer.
 //!
 //! # INTENTIONAL: a restored device backup yields an UNREADABLE vault
 //!
@@ -34,6 +36,7 @@ pub mod error;
 pub mod models;
 pub mod store;
 pub mod sync;
+pub mod tombstone;
 
 pub use error::{Error, Result};
 pub use models::{Entry, SealMeta, VaultManifest, VoiceMeta};

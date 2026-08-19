@@ -21,6 +21,9 @@ The app is proprietary. The part you have to trust is the part you can read.
   vault and a shared container. It takes no key and never decrypts a payload, which
   is why a synced container can only ever hold ciphertext. A caller that holds the key
   can pass a verifier, and anything failing it is quarantined rather than merged.
+- **Deletion tombstones** (`src/tombstone.rs`): a delete is a tiny marker that rides
+  the keyless container like any record, so removing an entry on one device removes it
+  everywhere — no shared mutable index, and a deleted record never quietly comes back.
 - **A reference reader** (`examples/read_vault.rs`): decrypts a vault with nothing
   but the passphrase and writes it out as Markdown. No app, no account, no network.
   It reads every layout the format has ever had.
@@ -100,4 +103,8 @@ by this repository.
 
 ---
 
-*Mirrored from our main repository; issues and PRs welcome, we sync upstream.*
+*The shared crate here — `crypto`, `envelope`, `models`, `error`, `store`, `sync`,
+`tombstone` — is the same code, module for module, that the app compiles and ships; a
+release cannot be cut while any of them drifts. A transitional desktop-only bridge and
+app-specific glue live in our private repository and are not part of this canonical
+crate. Issues and PRs welcome.*

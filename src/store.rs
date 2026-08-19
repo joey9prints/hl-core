@@ -104,14 +104,21 @@ impl Store {
                 Err(e) => return Err(e), // fail loud: a corrupt or wrong-key file is a bug to see
             }
         }
-        // newest-first by last_modified, with date then id as deterministic
-        // tiebreakers so same-millisecond saves (and cross-device merges) order stably.
+        // Newest-first by journal DATE, then by time-of-day within that date, then id.
+        // Date leads so an edited older entry keeps its place in the timeline instead of
+        // leaping to "today"; the time tiebreak orders same-day entries chronologically;
+        // id makes same-instant saves (and cross-device merges) deterministic.
         out.sort_by(|a, b| {
-            sort_key(b)
-                .cmp(&sort_key(a))
-                .then_with(|| b.date.cmp(&a.date))
+            b.date
+                .cmp(&a.date)
+                .then_with(|| sort_key(b).cmp(&sort_key(a)))
                 .then_with(|| b.id.cmp(&a.id))
         });
+        // One entry per id, defensively: a stray duplicate file for the same id (a
+        // sync filename race, or a legacy double-write) must never show as two entries.
+        // The sort put the newest first, so the first occurrence per id is the keeper.
+        let mut seen = std::collections::HashSet::new();
+        out.retain(|e| seen.insert(e.id.clone()));
         Ok(out)
     }
 
@@ -300,6 +307,45 @@ impl Store {
             }
         }
         Ok((imported, skipped, failed))
+    }
+
+    /// Delete every stored file for `id` (there is normally exactly one) and,
+    /// if the entry carries a voice note, its media blob. Returns true if
+    /// anything was removed. LOCAL ONLY: on a synced vault the peer copy in the
+    /// iCloud container must also be removed, otherwise the next reconcile
+    /// re-pulls it — a real tombstone in [`sync`] is the eventual fix.
+    pub fn delete_entry(&self, id: &str) -> Result<bool> {
+        let dir = self.root.join("entries");
+        let needle = format!("_{id}.hlj");
+        let mut removed = false;
+        let mut audio_id: Option<String> = None;
+        if dir.exists() {
+            for de in fs::read_dir(&dir)? {
+                let path = de?.path();
+                let is_match = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.ends_with(&needle));
+                if !is_match {
+                    continue;
+                }
+                // learn the audio id before unlinking, so the blob goes too
+                if audio_id.is_none() {
+                    if let Ok(e) = self.load_entry_file(&path) {
+                        audio_id = e.voice.map(|v| v.audio_id);
+                    }
+                }
+                let _ = fs::remove_file(&path);
+                removed = true;
+            }
+        }
+        if let Some(aid) = audio_id {
+            let _ = fs::remove_file(self.root.join("media").join(format!("{aid}.hla")));
+        }
+        // Leave a tombstone so the delete propagates through sync (the next reconcile
+        // carries it to the container, and from there to every other device).
+        let _ = crate::tombstone::mark(&dir, id, &crate::tombstone::now_stamp());
+        Ok(removed)
     }
 
     // ---- paths ----
