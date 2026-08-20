@@ -95,7 +95,7 @@ cargo test        # the full suite
 cargo clippy --all-targets -- -D warnings
 ```
 
-Requires Rust 1.77.2 or newer. CI runs the same three commands on macOS and Linux.
+Requires Rust 1.77.2 or newer. CI runs the same two commands on macOS and Linux.
 Nothing here is Apple-specific, even though the apps are.
 
 ## License

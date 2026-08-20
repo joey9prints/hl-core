@@ -83,6 +83,15 @@ else's code.
    accessibility class a security regression, not a usability fix.
 9. **Dependencies are not pinned and `Cargo.lock` is not committed** (this is a
    library). The crypto dependencies are the RustCrypto crates at caret versions.
+10. **Deletion tombstones are unauthenticated** (FORMAT.md §9.3). A `.tomb` marker
+    carries no key and no signature, so on a container an attacker can write to, a
+    forged `<id>.tomb` deletes a real entry on every device — and because ids are
+    never reused and a tombstone is final, the record does not come back. It is the
+    deletion-side twin of item 2: the keyless sync path can no more authenticate the
+    marker than it can the timestamp. The mitigation is the same shape — a caller
+    holding the key can gate which tombstones it honors — and, as with item 2, we
+    would like the keep-sync-keyless trade-off argued with. Disclosed now; a
+    key-bound tombstone is the hardening we would reach for.
 
 ## What a report does not need to argue
 

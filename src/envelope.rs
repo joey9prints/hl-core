@@ -39,7 +39,7 @@
 
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 use crate::crypto::{self, MasterKey, SubKey};
 use crate::error::{Error, Result};
@@ -130,19 +130,20 @@ pub fn seal_envelope(
     // Serialize the header FIRST: in v2 its exact bytes are the wrap AAD, so the
     // bytes that get authenticated must be the bytes that get stored.
     let hjson = serde_json::to_vec(header)?;
-    let mut cek = [0u8; 32];
+    // Zeroizing so the CEK is wiped on Drop — on the `?` error paths below too,
+    // not only the happy path where a manual zeroize would have run.
+    let mut cek = Zeroizing::new([0u8; 32]);
     crypto_fill(&mut cek);
     let payload = crypto::seal(
-        &SubKey::from_bytes(cek),
+        &SubKey::from_bytes(*cek),
         plaintext,
         &payload_aad(header.v, &header.id),
     )?;
     let wrapped = crypto::seal(
         &wrap_kek(root),
-        &cek,
+        &cek[..],
         &wrap_aad(header.v, &header.id, &header.key, &hjson),
     )?;
-    cek.zeroize();
     Ok(encode(&hjson, &wrapped, &payload))
 }
 
@@ -154,26 +155,25 @@ pub fn open_envelope(root: &MasterKey, bytes: &[u8]) -> Result<(EnvelopeHeader, 
     let d = decode(bytes)?;
     let header = d.header;
     check_version(header.v)?;
-    let mut cek = crypto::open(
+    // Zeroizing wraps both the unwrapped Vec and the fixed array, so every return
+    // path (including the length-check error and a failed payload open) wipes them.
+    let cek = Zeroizing::new(crypto::open(
         &wrap_kek(root),
         &d.wrapped,
         &wrap_aad(header.v, &header.id, &header.key, &d.header_bytes),
-    )?;
+    )?);
     if cek.len() != 32 {
-        cek.zeroize();
         return Err(Error::Format(
             "unwrapped content key is not 32 bytes".into(),
         ));
     }
-    let mut cek_arr = [0u8; 32];
-    cek_arr.copy_from_slice(&cek);
-    cek.zeroize();
+    let mut cek_arr = Zeroizing::new([0u8; 32]);
+    cek_arr.copy_from_slice(&cek[..]);
     let pt = crypto::open(
-        &SubKey::from_bytes(cek_arr),
+        &SubKey::from_bytes(*cek_arr),
         &d.payload,
         &payload_aad(header.v, &header.id),
     );
-    cek_arr.zeroize();
     Ok((header, pt?))
 }
 
@@ -214,21 +214,22 @@ pub fn reseal_key(
     let d = decode(bytes)?;
     let mut header = d.header;
     check_version(header.v)?;
-    let mut cek = crypto::open(
+    // Zeroizing: the CEK is wiped on Drop, including the `?` paths on serialize /
+    // re-wrap failure between here and the end.
+    let cek = Zeroizing::new(crypto::open(
         &wrap_kek(old_root),
         &d.wrapped,
         &wrap_aad(header.v, &header.id, &header.key, &d.header_bytes),
-    )?;
+    )?);
     // The new label goes into the header BEFORE the re-wrap, because in v2 the
     // re-serialized header is itself the AAD the new wrap is authenticated under.
     header.key = new_key_label.to_string();
     let new_hjson = serde_json::to_vec(&header)?;
     let new_wrapped = crypto::seal(
         &wrap_kek(new_root),
-        &cek,
+        &cek[..],
         &wrap_aad(header.v, &header.id, new_key_label, &new_hjson),
     )?;
-    cek.zeroize();
     Ok(encode(&new_hjson, &new_wrapped, &d.payload))
 }
 

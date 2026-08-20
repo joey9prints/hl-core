@@ -34,6 +34,7 @@ everything below and can be used as an executable version of this document.
   vault.json                       plaintext manifest (§3)
   entries/
     <YYYY-MM-DD>_<id>.hlj          one file per entry
+    <id>.tomb                      deletion marker for a removed entry (§9.3)
   media/
     <audioId>.hla                  one file per media blob (same envelope, §4)
 ```
@@ -42,6 +43,9 @@ Properties a reader may rely on:
 
 - **One file per id.** After a write, no other `*_<id>.hlj` exists in `entries/`.
   A date change rewrites the file under the new name and removes the old one.
+- **Deletions are explicit.** Removing an entry drops its `*_<id>.hlj` and leaves a
+  tiny, contentless `<id>.tomb` marker naming the deleted id (§9.3). The absence of a
+  file is never read as a deletion — only a tombstone is.
 - **No shared mutable file** other than `vault.json`. There is no index and no
   append log; the state of the vault *is* the directory listing. This is what lets
   two devices write into one synced directory without ever touching the same file.
@@ -147,9 +151,12 @@ A real 456-byte entry file decomposes as:
 | 220               | rest  | payload: 24 nonce ‖ ciphertext ‖ 16 tag         |
 
 The payload runs to end of file; it carries no length prefix of its own. There is no
-magic number and no trailer. A reader identifies an envelope file by reading
-`header_len`, parsing the header JSON, and finding `fmt == "hl-entry"`; the header's
-`v` then says which version's AADs apply.
+magic number and no trailer. A reader identifies an envelope by whether this structure
+*parses* — reading `header_len`, then the header JSON — not by a discriminator byte;
+`fmt` (`"hl-entry"`) and `v` are then read from that header, `v` deciding which
+version's AADs apply. This is how the reference reader in `read_vault` tells an envelope
+from the v0 legacy layout (§7): v0 files carry no header, so the envelope parse fails on
+them and it falls back to the direct-seal reading.
 
 `wrap_len` is 72 in every file written to date, but it is explicit on the wire so the
 key-wrapping AEAD can change without breaking the outer parse.
@@ -354,11 +361,11 @@ raw blob rather than JSON, and their header `id` is the `audioId`.
 
 ## 9. Sync representation
 
-A synced container holds the **same envelope files, byte for byte**. There is no
-separate wire format, no re-encryption at the boundary, and nothing in the container
-that is not an entry envelope: no manifest, no index, no lock file. Two devices
-therefore never write the same path, and a cloud file provider never has to
-manufacture a conflict copy.
+A synced container holds the **same envelope files, byte for byte**, alongside
+id-named `.tomb` deletion markers (§9.3). There is no separate wire format, no
+re-encryption at the boundary, and no manifest, index, or lock file — nothing two
+devices both write. Two devices therefore never write the same path, and a cloud file
+provider never has to manufacture a conflict copy.
 
 Reconcile (`sync.rs`) needs **no key and never decrypts a payload**:
 
@@ -374,8 +381,9 @@ Reconcile (`sync.rs`) needs **no key and never decrypts a payload**:
 
 The operation is symmetric and idempotent: a second pass over a converged pair moves
 nothing. Unreadable files (an un-materialized cloud placeholder, an I/O error) are
-counted and retried next pass rather than treated as deletions — **reconcile never
-deletes a record**, and propagates no deletions at all.
+counted and retried next pass, and are never treated as deletions. A deletion is
+**never** inferred from an absent file — it propagates only as an explicit tombstone
+marker (§9.3), applied before the newest-wins steps above.
 
 ### 9.1 Quarantine
 
@@ -402,7 +410,27 @@ bare directory of envelopes and a `--kdf` pointing at the manifest that seals th
 
 The consequence worth stating plainly: because reconcile works entirely on plaintext
 headers, the sync path has no access to a key, and a synced container can only ever
-contain ciphertext plus the metadata listed in §4.2.
+contain ciphertext (the envelopes), tiny contentless tombstones, and the plaintext
+header metadata listed in §4.2.
+
+### 9.3 Deletions (tombstones)
+
+Because absence is never read as a deletion, removing a record has to be published as a
+positive fact. Deleting an entry writes a **tombstone**: an `<id>.tomb` file beside the
+envelopes, holding one line — the RFC 3339 instant of the delete — and no key and no
+plaintext. It rides the keyless container like any envelope, and every scan in this
+crate filters to `*.hlj`, so a tombstone is invisible to the entry logic; only the
+`tombstone` module reads it.
+
+Reconcile applies tombstones **first**, before newest-wins: any id with a tombstone has
+its envelopes removed on both sides and is never re-copied. Ids are never reused (each
+record is minted with a fresh UUID), so a tombstone is final — a deleted record does not
+return, and a delete therefore wins over a concurrent edit. The marker is written once
+per id and never mutated; two devices deleting the same id write byte-identical
+tombstones, so there is still no file they contend on.
+
+Tombstones are the only mechanism by which a deletion crosses the sync boundary: there
+is no delete list, no manifest, and no reliance on a file simply disappearing.
 
 ## 10. Versioning
 

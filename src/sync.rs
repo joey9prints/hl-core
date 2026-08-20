@@ -1,14 +1,17 @@
 //! Byte-level reconcile between a local vault directory and a shared container
 //! directory (on Apple platforms, an iCloud container).
 //!
-//! The container holds ONLY id-named entry envelopes — no manifest, no index, no
-//! shared mutable file. That is a deliberate invariant: two devices never write
-//! the same file, so the cloud provider never has to make a conflict copy.
+//! The container holds id-named entry envelopes plus id-named `.tomb` deletion
+//! markers — no manifest, no index, no file that two devices both write. That is a
+//! deliberate invariant: devices never contend on a file, so the cloud provider
+//! never has to make a conflict copy.
 //!
 //! Reconcile needs NO key and never decrypts a payload. It compares the plaintext
 //! envelope header's `created` stamp, newest wins, and moves whole files with
-//! temp+atomic-rename — which is why the cloud only ever holds ciphertext. One
-//! file per id per directory afterward.
+//! temp+atomic-rename — which is why the cloud only ever holds ciphertext (plus
+//! tiny, contentless tombstones). Deletions are NOT inferred from an absent file;
+//! they propagate ONLY as explicit tombstone markers (see [`crate::tombstone`]),
+//! which are applied first each pass. One envelope per id per directory afterward.
 
 //! # Quarantine
 //!
@@ -52,19 +55,24 @@ struct Item {
     created: String,
 }
 
-/// Map id → newest trustworthy file in `dir`, and the set of paths quarantined.
+/// Map id → newest trustworthy file in `dir`, the set of paths quarantined, and
+/// the set of paths that could not be read this pass.
 ///
 /// A file is quarantined if it does not parse as a well-formed envelope, or if a
 /// verifier was supplied and rejects it. Quarantined files are left on disk exactly
-/// as they are and take no part in anything that follows.
+/// as they are and take no part in anything that follows. An *unreadable* file — an
+/// un-materialized iCloud placeholder, say — is likewise set aside: protected from
+/// purge (we can't vouch for a file we can't read) and counted as an error, so it is
+/// retried on a later pass rather than silently skipped.
 fn scan(
     dir: &Path,
     verify: Option<Verifier<'_>>,
-) -> Result<(HashMap<String, Item>, HashSet<PathBuf>)> {
+) -> Result<(HashMap<String, Item>, HashSet<PathBuf>, HashSet<PathBuf>)> {
     let mut map: HashMap<String, Item> = HashMap::new();
     let mut quarantined: HashSet<PathBuf> = HashSet::new();
+    let mut unreadable: HashSet<PathBuf> = HashSet::new();
     if !dir.exists() {
-        return Ok((map, quarantined));
+        return Ok((map, quarantined, unreadable));
     }
     for de in fs::read_dir(dir)? {
         let path = de?.path();
@@ -73,7 +81,12 @@ fn scan(
         }
         let bytes = match fs::read(&path) {
             Ok(b) => b,
-            Err(_) => continue, // e.g. an un-materialized cloud placeholder — retry next pass
+            // e.g. an un-materialized cloud placeholder: don't skip it silently —
+            // set it aside so purge never deletes it, count it, and retry next pass.
+            Err(_) => {
+                unreadable.insert(path.clone());
+                continue;
+            }
         };
         if !envelope::is_well_formed(&bytes) {
             quarantined.insert(path.clone());
@@ -105,7 +118,7 @@ fn scan(
             }
         }
     }
-    Ok((map, quarantined))
+    Ok((map, quarantined, unreadable))
 }
 
 fn filename(p: &Path) -> String {
@@ -171,13 +184,20 @@ pub fn reconcile_with(
     // be re-pushed to the peer that deleted it.
     let deleted = crate::tombstone::reconcile_pair(local, remote)?;
 
-    let (l, l_bad) = scan(local, verify)?;
-    let (r, r_bad) = scan(remote, verify)?;
+    let (l, l_bad, l_unread) = scan(local, verify)?;
+    let (r, r_bad, r_unread) = scan(remote, verify)?;
     let mut rep = SyncReport {
         quarantined: l_bad.len() + r_bad.len(),
+        // Unreadable files (cloud placeholders / IO) — counted here and retried
+        // next pass, matching the `errors` field's contract.
+        errors: l_unread.len() + r_unread.len(),
         deleted,
         ..SyncReport::default()
     };
+    // purge_other must never delete a file it can't vouch for: quarantined, OR
+    // merely unreadable (a placeholder that will materialize on a later pass).
+    let l_protected: HashSet<PathBuf> = l_bad.union(&l_unread).cloned().collect();
+    let r_protected: HashSet<PathBuf> = r_bad.union(&r_unread).cloned().collect();
 
     let mut ids: HashSet<String> = HashSet::new();
     ids.extend(l.keys().cloned());
@@ -196,7 +216,7 @@ pub fn reconcile_with(
                 let name = filename(&ri.path);
                 match atomic_copy(&ri.path, local, &name) {
                     Ok(_) => {
-                        let _ = purge_other(local, &id, &name, &l_bad);
+                        let _ = purge_other(local, &id, &name, &l_protected);
                         rep.pulled += 1;
                     }
                     Err(_) => rep.errors += 1,
@@ -207,7 +227,7 @@ pub fn reconcile_with(
                     let name = filename(&ri.path);
                     match atomic_copy(&ri.path, local, &name) {
                         Ok(_) => {
-                            let _ = purge_other(local, &id, &name, &l_bad);
+                            let _ = purge_other(local, &id, &name, &l_protected);
                             rep.pulled += 1;
                         }
                         Err(_) => rep.errors += 1,
@@ -216,7 +236,7 @@ pub fn reconcile_with(
                     let name = filename(&li.path);
                     match atomic_copy(&li.path, remote, &name) {
                         Ok(_) => {
-                            let _ = purge_other(remote, &id, &name, &r_bad);
+                            let _ = purge_other(remote, &id, &name, &r_protected);
                             rep.pushed += 1;
                         }
                         Err(_) => rep.errors += 1,

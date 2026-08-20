@@ -311,9 +311,10 @@ impl Store {
 
     /// Delete every stored file for `id` (there is normally exactly one) and,
     /// if the entry carries a voice note, its media blob. Returns true if
-    /// anything was removed. LOCAL ONLY: on a synced vault the peer copy in the
-    /// iCloud container must also be removed, otherwise the next reconcile
-    /// re-pulls it — a real tombstone in [`sync`] is the eventual fix.
+    /// anything was removed, and writes a `.tomb` marker (see [`crate::tombstone`])
+    /// so the delete propagates: without it, a synced peer that still holds the
+    /// entry would re-push it on the next reconcile. The tombstone is what makes
+    /// the removal cross the keyless sync boundary rather than being local-only.
     pub fn delete_entry(&self, id: &str) -> Result<bool> {
         let dir = self.root.join("entries");
         let needle = format!("_{id}.hlj");
