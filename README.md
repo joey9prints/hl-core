@@ -9,7 +9,10 @@ The app is proprietary. The part you have to trust is the part you can read.
 ## What this is
 
 - **The encryption and key management** (`src/crypto.rs`): Argon2id passphrase KDF,
-  HKDF-SHA256 subkey derivation, XChaCha20-Poly1305 AEAD, keys zeroized on drop.
+  HKDF-SHA256 subkey derivation, XChaCha20-Poly1305 AEAD, keys zeroized on drop. Every
+  primitive is a [RustCrypto](https://github.com/RustCrypto) crate — we implement none
+  of them ourselves, and randomness is the OS CSPRNG. Crates, versions and the reason
+  it is not libsodium are in [FORMAT.md §5.1](FORMAT.md).
 - **The envelope** (`src/envelope.rs`): each record is sealed under its own random
   content key, and that content key is wrapped by a key derived from the vault root.
   The wrap is authenticated under the record's stored header bytes, so no part of the
@@ -64,7 +67,9 @@ vault key decrypts them like anything else. See FORMAT.md §6.
 
 1. Read the format: [FORMAT.md](FORMAT.md).
 2. Read the crypto: [`src/crypto.rs`](src/crypto.rs) and
-   [`src/envelope.rs`](src/envelope.rs).
+   [`src/envelope.rs`](src/envelope.rs). Neither file implements a primitive; what
+   they contain is composition, which is the part worth auditing. `cargo tree -e
+   normal` shows the whole dependency set.
 3. Check the tamper claim yourself: `cargo test v2_header_tamper_is_caught`, and
    `cargo test v1_header_tamper_was_not_caught_and_v2_catches_it`, which forges the
    same byte in each version and shows v1 accepting it and v2 refusing.
@@ -91,11 +96,12 @@ vault key decrypts them like anything else. See FORMAT.md §6.
 ## Building
 
 ```
-cargo test        # the full suite
+cargo fmt --check
 cargo clippy --all-targets -- -D warnings
+cargo test        # the full suite
 ```
 
-Requires Rust 1.77.2 or newer. CI runs the same two commands on macOS and Linux.
+Requires Rust 1.77.2 or newer. CI runs those three commands on macOS and Linux.
 Nothing here is Apple-specific, even though the apps are.
 
 ## License

@@ -254,10 +254,10 @@ Everything is **XChaCha20-Poly1305**: a 256-bit key, a 192-bit nonce, a 128-bit 
 sealed_blob = nonce (24 bytes) ‖ ciphertext ‖ tag (16 bytes)
 ```
 
-Nonces are drawn from the OS CSPRNG per operation. A 192-bit random nonce makes
-collision a non-issue at any realistic volume, and in v1 the question is narrower
-still: each record has its own content key, so the payload nonce space is per-record
-rather than shared.
+Nonces are drawn from the OS CSPRNG per operation (§5.1). A 192-bit random nonce
+makes collision a non-issue at any realistic volume, and in the envelope the question
+is narrower still: each record has its own content key, so the payload nonce space is
+per-record rather than shared.
 
 Failure looks like exactly one thing: the tag does not verify and the open returns an
 error. The format does not distinguish "wrong key" from "tampered file", and callers
@@ -278,6 +278,63 @@ The `<id>` binding is what stops a whole record being substituted for another on
 move the ciphertext of entry B into entry A's file and it will not open. The header
 binding in v2 extends that to every field of the header, including the key label,
 which the v1 wrap AAD had to name explicitly.
+
+### 5.1 Implementations
+
+**We implement no cryptographic primitive ourselves.** Every primitive here comes from
+the [RustCrypto](https://github.com/RustCrypto) crates, in pure Rust, at the versions
+below; `subtle`, from the dalek project, is a constant-time comparison utility rather
+than a primitive. The only thing this project composed is the envelope that arranges
+them (§4), and that is where review effort is best spent.
+
+| what | crate | version | upstream |
+|---|---|---|---|
+| Argon2id (§3.1) | `argon2` | 0.5.3 | [RustCrypto/password-hashes](https://github.com/RustCrypto/password-hashes/tree/master/argon2) |
+| XChaCha20-Poly1305 | `chacha20poly1305` | 0.10.1 | [RustCrypto/AEADs](https://github.com/RustCrypto/AEADs/tree/master/chacha20poly1305) |
+| — its stream cipher | `chacha20` | 0.9.1 | [RustCrypto/stream-ciphers](https://github.com/RustCrypto/stream-ciphers) |
+| — its MAC | `poly1305` | 0.8.0 | [RustCrypto/universal-hashes](https://github.com/RustCrypto/universal-hashes) |
+| HKDF (§3.2) | `hkdf` | 0.12.4 | [RustCrypto/KDFs](https://github.com/RustCrypto/KDFs) |
+| SHA-256 | `sha2` | 0.10.9 | [RustCrypto/hashes](https://github.com/RustCrypto/hashes) |
+| key wiping | `zeroize` | 1.9.0 | [RustCrypto/utils](https://github.com/RustCrypto/utils) |
+| constant-time comparison | `subtle` | 2.6.1 | [dalek-cryptography/subtle](https://github.com/dalek-cryptography/subtle) |
+| randomness | `rand` / `getrandom` | 0.8.7 / 0.2.17 | [rust-random](https://github.com/rust-random) |
+
+All are dual-licensed MIT or Apache-2.0, the same terms as this crate, except `subtle`,
+which is BSD-3-Clause. `blake2` and `password-hash` appear in the tree as dependencies
+of `argon2`, not as anything this code calls.
+
+`cargo tree` shows **two** versions of `getrandom`. Only 0.2.17 is on the crypto path;
+0.4.3 arrives through `uuid`, which is a dev-dependency used to name temporary
+directories in tests and is not compiled into the library.
+
+**Not libsodium.** The question comes up often enough to answer directly. libsodium is
+a fine library and this is not a criticism of it; the choice is about the build. These
+crates are pure Rust with no C toolchain, no system library to locate at build time, no
+FFI boundary to get wrong, and no `unsafe` in the calling code — and one dependency set
+compiles unchanged for macOS, iOS and Linux, which is what lets CI prove on Linux that
+the format is not Apple-specific. The primitives are the same primitives either way:
+ChaCha20-Poly1305 per RFC 8439, extended to a 192-bit nonce by the XChaCha
+construction (an IRTF CFRG draft rather than a ratified RFC, and the same construction
+libsodium's `crypto_secretbox_xchacha20poly1305` uses); Argon2id per RFC 9106; HKDF per
+RFC 5869.
+
+**Randomness** is the operating system's, never a userspace PRNG this code seeds or
+reseeds. Every random value — the 16-byte KDF salt, each 32-byte content key, every
+24-byte nonce — comes from `OsRng`, which is `rand_core`'s handle on `getrandom`, which
+calls straight through to the platform:
+
+| platform | syscall |
+|---|---|
+| macOS | `getentropy(2)` |
+| iOS, watchOS, tvOS | `CCRandomGenerateBytes` (CommonCrypto) |
+| Linux, Android | `getrandom(2)` |
+
+Nothing is cached between calls and there is no fallback to a seeded generator.
+
+**Versions are caret ranges and `Cargo.lock` is not committed**, which is the normal
+convention for a library and does mean a downstream build may resolve newer patch
+releases than those above. To reproduce exactly what we ship, pin them. See
+[SECURITY.md](SECURITY.md) item 9.
 
 ## 6. Sealed entries and capsules
 

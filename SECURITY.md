@@ -82,7 +82,11 @@ else's code.
    you every file and no way to read any of them. We consider loosening that
    accessibility class a security regression, not a usability fix.
 9. **Dependencies are not pinned and `Cargo.lock` is not committed** (this is a
-   library). The crypto dependencies are the RustCrypto crates at caret versions.
+   library). The crypto dependencies are the RustCrypto crates at caret versions, so a
+   downstream build can resolve newer patch releases than the ones we ship. Every
+   primitive, its crate, its exact version and the platform RNG path are listed in
+   FORMAT.md §5.1. We implement no primitive ourselves; the envelope construction is
+   the original work and the thing to review.
 10. **Deletion tombstones are unauthenticated** (FORMAT.md §9.3). A `.tomb` marker
     carries no key and no signature, so on a container an attacker can write to, a
     forged `<id>.tomb` deletes a real entry on every device — and because ids are
