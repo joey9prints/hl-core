@@ -46,11 +46,14 @@ fn main() {
 /// existing parent is canonicalized and the final component rejoined.
 fn dest_inside_vault(vault: &Path, dest: &Path) -> bool {
     let v = vault.canonicalize().unwrap_or_else(|_| vault.to_path_buf());
-    let d = dest.canonicalize().unwrap_or_else(|_| match (dest.parent(), dest.file_name()) {
-        (Some(parent), Some(name)) => {
-            parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf()).join(name)
-        }
-        _ => dest.to_path_buf(),
-    });
+    let d = dest
+        .canonicalize()
+        .unwrap_or_else(|_| match (dest.parent(), dest.file_name()) {
+            (Some(parent), Some(name)) => parent
+                .canonicalize()
+                .unwrap_or_else(|_| parent.to_path_buf())
+                .join(name),
+            _ => dest.to_path_buf(),
+        });
     d == v || d.starts_with(&v)
 }

@@ -64,15 +64,33 @@ struct Item {
 /// un-materialized iCloud placeholder, say — is likewise set aside: protected from
 /// purge (we can't vouch for a file we can't read) and counted as an error, so it is
 /// retried on a later pass rather than silently skipped.
-fn scan(
-    dir: &Path,
-    verify: Option<Verifier<'_>>,
-) -> Result<(HashMap<String, Item>, HashSet<PathBuf>, HashSet<PathBuf>)> {
+struct Scan {
+    /// id → the newest file for that id that we are willing to trust.
+    newest: HashMap<String, Item>,
+    /// Files rejected as untrustworthy: malformed, or refused by the verifier.
+    quarantined: HashSet<PathBuf>,
+    /// Files we could not read at all this pass.
+    unreadable: HashSet<PathBuf>,
+}
+
+impl Scan {
+    /// Every path this pass could not vouch for, for whichever reason. `purge_other`
+    /// must leave all of them alone.
+    fn protected(&self) -> HashSet<PathBuf> {
+        self.quarantined.union(&self.unreadable).cloned().collect()
+    }
+}
+
+fn scan(dir: &Path, verify: Option<Verifier<'_>>) -> Result<Scan> {
     let mut map: HashMap<String, Item> = HashMap::new();
     let mut quarantined: HashSet<PathBuf> = HashSet::new();
     let mut unreadable: HashSet<PathBuf> = HashSet::new();
     if !dir.exists() {
-        return Ok((map, quarantined, unreadable));
+        return Ok(Scan {
+            newest: map,
+            quarantined,
+            unreadable,
+        });
     }
     for de in fs::read_dir(dir)? {
         let path = de?.path();
@@ -118,7 +136,11 @@ fn scan(
             }
         }
     }
-    Ok((map, quarantined, unreadable))
+    Ok(Scan {
+        newest: map,
+        quarantined,
+        unreadable,
+    })
 }
 
 fn filename(p: &Path) -> String {
@@ -184,27 +206,27 @@ pub fn reconcile_with(
     // be re-pushed to the peer that deleted it.
     let deleted = crate::tombstone::reconcile_pair(local, remote)?;
 
-    let (l, l_bad, l_unread) = scan(local, verify)?;
-    let (r, r_bad, r_unread) = scan(remote, verify)?;
+    let l = scan(local, verify)?;
+    let r = scan(remote, verify)?;
     let mut rep = SyncReport {
-        quarantined: l_bad.len() + r_bad.len(),
+        quarantined: l.quarantined.len() + r.quarantined.len(),
         // Unreadable files (cloud placeholders / IO) — counted here and retried
         // next pass, matching the `errors` field's contract.
-        errors: l_unread.len() + r_unread.len(),
+        errors: l.unreadable.len() + r.unreadable.len(),
         deleted,
         ..SyncReport::default()
     };
     // purge_other must never delete a file it can't vouch for: quarantined, OR
     // merely unreadable (a placeholder that will materialize on a later pass).
-    let l_protected: HashSet<PathBuf> = l_bad.union(&l_unread).cloned().collect();
-    let r_protected: HashSet<PathBuf> = r_bad.union(&r_unread).cloned().collect();
+    let l_protected = l.protected();
+    let r_protected = r.protected();
 
     let mut ids: HashSet<String> = HashSet::new();
-    ids.extend(l.keys().cloned());
-    ids.extend(r.keys().cloned());
+    ids.extend(l.newest.keys().cloned());
+    ids.extend(r.newest.keys().cloned());
 
     for id in ids {
-        match (l.get(&id), r.get(&id)) {
+        match (l.newest.get(&id), r.newest.get(&id)) {
             (Some(li), None) => {
                 let name = filename(&li.path);
                 match atomic_copy(&li.path, remote, &name) {
@@ -298,7 +320,7 @@ mod tests {
 
         // both dirs now hold a, b, c
         for dir in [&local, &remote] {
-            let ids: HashSet<_> = scan(dir, None).unwrap().0.into_keys().collect();
+            let ids: HashSet<_> = scan(dir, None).unwrap().newest.into_keys().collect();
             assert!(ids.contains("a") && ids.contains("b") && ids.contains("c"));
         }
         // c resolved to the newer bytes on the local side
@@ -348,7 +370,7 @@ mod tests {
 
         // Keyless reconcile cannot see it: the forged stamp is simply newer, and it
         // wins. This is the residual limit of a sync layer that holds no key.
-        let keyless = scan(&remote, None).unwrap().0;
+        let keyless = scan(&remote, None).unwrap().newest;
         assert_eq!(keyless.get("a").unwrap().created, "2099-08-01T09:00:00Z");
 
         // With a verifier, the forgery fails to open and is quarantined instead.
@@ -402,9 +424,27 @@ mod tests {
         let local = tmp();
         let remote = tmp();
         // "a" is synced on both; "b" is a normal local-only entry that must survive.
-        put(&local, "a", "2026-08-01", "2026-08-01T10:00:00Z", b"to be deleted");
-        put(&remote, "a", "2026-08-01", "2026-08-01T10:00:00Z", b"to be deleted");
-        put(&local, "b", "2026-08-02", "2026-08-02T10:00:00Z", b"keep me");
+        put(
+            &local,
+            "a",
+            "2026-08-01",
+            "2026-08-01T10:00:00Z",
+            b"to be deleted",
+        );
+        put(
+            &remote,
+            "a",
+            "2026-08-01",
+            "2026-08-01T10:00:00Z",
+            b"to be deleted",
+        );
+        put(
+            &local,
+            "b",
+            "2026-08-02",
+            "2026-08-02T10:00:00Z",
+            b"keep me",
+        );
         // a delete of "a" originated on the peer (its tombstone is in the container).
         crate::tombstone::mark(&remote, "a", "2026-08-03T09:00:00Z").unwrap();
 
@@ -413,7 +453,10 @@ mod tests {
         // a is gone everywhere, b propagated normally
         assert!(!local.join("2026-08-01_a.hlj").exists());
         assert!(!remote.join("2026-08-01_a.hlj").exists());
-        assert!(remote.join("2026-08-02_b.hlj").exists(), "b pushed to remote");
+        assert!(
+            remote.join("2026-08-02_b.hlj").exists(),
+            "b pushed to remote"
+        );
         // the tombstone reached the local side too
         assert!(local.join("a.tomb").exists());
 

@@ -59,7 +59,10 @@ pub fn read_all(dir: &Path) -> HashMap<String, String> {
             Some(s) => s.to_string(),
             None => continue,
         };
-        let at = fs::read_to_string(&p).unwrap_or_default().trim().to_string();
+        let at = fs::read_to_string(&p)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
         if at.is_empty() {
             continue;
         }
