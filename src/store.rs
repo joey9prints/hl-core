@@ -99,10 +99,9 @@ impl Store {
             if path.extension().and_then(|e| e.to_str()) != Some("hlj") {
                 continue;
             }
-            match self.load_entry_file(&path) {
-                Ok(e) => out.push(e),
-                Err(e) => return Err(e), // fail loud: a corrupt or wrong-key file is a bug to see
-            }
+            // Propagate rather than skip: a corrupt or wrong-key file is a bug to see,
+            // and silently dropping it would quietly shorten someone's journal.
+            out.push(self.load_entry_file(&path)?);
         }
         // Newest-first by journal DATE, then by time-of-day within that date, then id.
         // Date leads so an edited older entry keeps its place in the timeline instead of
