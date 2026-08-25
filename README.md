@@ -1,5 +1,7 @@
 # hl-core
 
+[![ci](https://github.com/joey9prints/hl-core/actions/workflows/ci.yml/badge.svg)](https://github.com/joey9prints/hl-core/actions/workflows/ci.yml)
+
 The vault format and cryptographic core of [The Human Layer](https://thehumanlayer.co) —
 a local, encrypted journal with on-device AI.
 
